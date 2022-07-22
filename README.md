@@ -4,6 +4,10 @@
 
 this README contains how to run the code
 
+# Task1
+located in `task1` directory
+
+# Task2
 ## Setup
 
 ```shell
