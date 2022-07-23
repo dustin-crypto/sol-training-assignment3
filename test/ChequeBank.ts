@@ -530,7 +530,8 @@ describe("ChequeBank test suite", async () => {
       expect(await chequeBank.redeemableCheques(id)).to.be.true;
 
       // signover
-      const getCounter: BigNumber = (await chequeBank.chequeSignOverCounter(id)).toNumber() + 1;
+      const getCounter: BigNumber =
+        (await chequeBank.chequeSignOverCounter(id)).toNumber() + 1;
       const makeSignOver = ethers.utils.hexConcat([
         "0xFFFFDEAD",
         utils.hexZeroPad(utils.hexlify(getCounter), 1),
@@ -550,13 +551,17 @@ describe("ChequeBank test suite", async () => {
           newPayee: payee2,
         },
         sig: signOverSignature,
-      }
+      };
       tx = await chequeBank.connect(user2).notifySignOver(signOver);
       await tx.wait();
 
-      expect(await chequeBank.chequeSignOverCounter(id)).to.equal(BigNumber.from(1));
+      expect(await chequeBank.chequeSignOverCounter(id)).to.equal(
+        BigNumber.from(1)
+      );
       expect((await chequeBank.cheques(id)).chequeInfo.payee).to.equal(payee2);
-      expect((await chequeBank.chequeSignOverList(id, 0)).signOverInfo.chequeId).to.equal('0x' + id.toString('hex'));
+      expect(
+        (await chequeBank.chequeSignOverList(id, 0)).signOverInfo.chequeId
+      ).to.equal("0x" + id.toString("hex"));
 
       // after signOver redeem fail
       const remakeChequeData = {
@@ -567,13 +572,17 @@ describe("ChequeBank test suite", async () => {
         validFrom: 0,
         validThru: 0,
       };
-      await expect(chequeBank.connect(user2).redeem(remakeChequeData)).to.be.revertedWith('Unmatched cheque and payee');
+      await expect(
+        chequeBank.connect(user2).redeem(remakeChequeData)
+      ).to.be.revertedWith("Unmatched cheque and payee");
 
       // redeem from payee2
       makeChequeData.chequeInfo.payee = payee2;
-      tx = await chequeBank.connect(user3).redeemSignOver(makeChequeData, [signOver]);
-      await tx.wait()
-      expect(await chequeBank.userBalances(payee2) > 0).to.be.true;
+      tx = await chequeBank
+        .connect(user3)
+        .redeemSignOver(makeChequeData, [signOver]);
+      await tx.wait();
+      expect((await chequeBank.userBalances(payee2)) > 0).to.be.true;
     });
   });
 });
