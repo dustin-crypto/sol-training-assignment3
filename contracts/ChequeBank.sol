@@ -4,10 +4,12 @@ import {IChequeBank} from './interfaces/IChequeBank.sol';
 
 contract ChequeBank is IChequeBank {
 
+  bytes4 constant signOverHeader = 0xFFFFDEAD;
   mapping(address => uint) public userBalances;
-  mapping(address => Cheque) public userSignedCheque;
   mapping(bytes32 => Cheque) public cheques;
   mapping(bytes32 => bool) public redeemableCheques;
+  mapping(bytes32 => uint) public chequeSignOverCounter;
+  mapping(bytes32 => SignOver[]) public chequeSignOverList;
 
   function deposit() payable override external {
     userBalances[msg.sender] += msg.value;
@@ -38,6 +40,20 @@ contract ChequeBank is IChequeBank {
         address(this),
         chequeInfo.validFrom,
         chequeInfo.validThru
+      )
+    );
+  }
+
+  function getSignOverMessageHash(
+    SignOverInfo memory signOverInfo
+  ) private pure returns (bytes32) {
+    return keccak256(
+      abi.encodePacked(
+        signOverHeader,
+        signOverInfo.counter,
+        signOverInfo.chequeId,
+        signOverInfo.oldPayee,
+        signOverInfo.newPayee
       )
     );
   }
@@ -92,7 +108,6 @@ contract ChequeBank is IChequeBank {
       _newCheque.sig
     );
     cheques[c.chequeId] = newCheque;
-    userSignedCheque[msg.sender] = newCheque;
     redeemableCheques[c.chequeId] = true;
   }
 
@@ -126,7 +141,64 @@ contract ChequeBank is IChequeBank {
   function revoke(bytes32 _chequeId) override external {
     require(cheques[_chequeId].chequeInfo.payer == msg.sender, "Not the payer");
     require(redeemableCheques[_chequeId], "Already redeemed");
+    require(chequeSignOverCounter[_chequeId] == 0, "Has been signedOver");
     redeemableCheques[_chequeId] = false;
+  }
+
+  function notifySignOver(SignOver calldata _signOverData) override external {
+    SignOverInfo calldata signOver = _signOverData.signOverInfo;
+    (bytes32 r, bytes32 s, uint8 v) = splitSignature(_signOverData.sig);
+    require(msg.sender == recoverSigner(getSignOverMessageHash(signOver), v, r, s), 'Not valid signature');
+    require(signOver.counter < 6, "Exceed sign-over limit");
+    require(redeemableCheques[signOver.chequeId], "Redeemed or Revoked");
+
+    // store SignOver
+    SignOver memory newSignOver = SignOver(
+      SignOverInfo({
+        counter: signOver.counter,
+        chequeId: signOver.chequeId,
+        oldPayee: signOver.oldPayee,
+        newPayee: signOver.newPayee
+      }),
+      _signOverData.sig
+    );
+
+    // sign-over counter + 1
+    chequeSignOverCounter[signOver.chequeId]++;
+
+    // change payee on this cheque
+    cheques[signOver.chequeId].chequeInfo.payee = signOver.newPayee;
+
+    // store sign over data
+    chequeSignOverList[signOver.chequeId].push(newSignOver);
+  }
+
+  function redeemSignOver(
+    Cheque calldata _chequeData,
+    SignOver[] calldata _signOverData
+  ) override external {
+    // check all data
+    bytes32 id = _chequeData.chequeInfo.chequeId;
+    Cheque storage c = cheques[id];
+    require(keccak256(c.sig) == keccak256(_chequeData.sig) &&
+            c.chequeInfo.chequeId == _chequeData.chequeInfo.chequeId &&
+            c.chequeInfo.payer == _chequeData.chequeInfo.payer &&
+            c.chequeInfo.payee == _chequeData.chequeInfo.payee &&
+            c.chequeInfo.amount == _chequeData.chequeInfo.amount && 
+            c.chequeInfo.validFrom == _chequeData.chequeInfo.validFrom &&
+            c.chequeInfo.validThru == _chequeData.chequeInfo.validThru, "Cheque data not valid");
+    SignOver[] storage s = chequeSignOverList[id];
+    for (uint256 i = 0; i < _signOverData.length; i++) {
+      require(keccak256(s[i].sig) == keccak256(_signOverData[i].sig) &&
+              s[i].signOverInfo.chequeId == _signOverData[i].signOverInfo.chequeId &&
+              s[i].signOverInfo.counter == _signOverData[i].signOverInfo.counter &&
+              s[i].signOverInfo.oldPayee == _signOverData[i].signOverInfo.oldPayee &&
+              s[i].signOverInfo.newPayee == _signOverData[i].signOverInfo.newPayee, "Sign-over data not valid");
+    }
+
+    // redeem successfully! transfer funds to payee
+    userBalances[msg.sender] += c.chequeInfo.amount;
+    payable(msg.sender).transfer(100);
   }
 
   function isChequeValid(address payee, bytes32 _chequeId) public view returns(bool) {
@@ -138,6 +210,7 @@ contract ChequeBank is IChequeBank {
       return false;
     }
 
+    // check payer balances in this contract
     if (c.amount > userBalances[c.payer]) {
       return false;
     }

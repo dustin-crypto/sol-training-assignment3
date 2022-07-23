@@ -6,7 +6,7 @@ import { Contract, ContractFactory, BigNumber, utils } from "ethers";
 describe("ChequeBank test suite", async () => {
   let ChequeBank: ContractFactory;
   let chequeBank: Contract;
-  let user1, user2;
+  let user1, user2, user3;
   const makeChequeId = () => {
     return randomBytes(32);
   };
@@ -24,6 +24,31 @@ describe("ChequeBank test suite", async () => {
     it("generate bytes32 chequeId successfully", () => {
       const id = makeChequeId();
       expect(id.toString("hex").length === 64).to.be.true; // 32 bytes
+    });
+    it("signover struct", async () => {
+      [user1, user2, user3] = await ethers.getSigners();
+      const id = makeChequeId();
+      const payee = user2.address;
+      const payee2 = user3.address;
+      const concat = ethers.utils.hexConcat([
+        "0xFFFFDEAD",
+        utils.hexZeroPad(utils.hexlify(6), 1),
+        id,
+        payee,
+        payee2,
+      ]);
+      const signature = await user2.signMessage(
+        utils.arrayify(utils.keccak256(concat))
+      );
+      const sig = ethers.utils.splitSignature(signature);
+      expect(
+        await chequeBank.recoverSigner(
+          utils.keccak256(concat),
+          sig.v,
+          sig.r,
+          sig.s
+        )
+      ).to.equal(payee);
     });
   });
   describe("function test", async () => {
@@ -459,6 +484,96 @@ describe("ChequeBank test suite", async () => {
       expect(await chequeBank.redeemableCheques(id)).to.be.false;
       expect(await chequeBank.userBalances(payer)).to.equal(19000);
       expect(await chequeBank.userBalances(payee)).to.equal(1000);
+    });
+
+    it("notifySignOver and redeemSignOver function", async () => {
+      [user1, user2, user3] = await ethers.getSigners();
+
+      // deposit
+      let tx = await chequeBank.deposit({ value: 20000 });
+      await tx.wait();
+
+      const id = makeChequeId();
+      const payer = user1.address;
+      const payee = user2.address;
+      const payee2 = user3.address;
+      const amount = 1000;
+
+      const concat = ethers.utils.hexConcat([
+        id,
+        payer,
+        payee,
+        utils.hexZeroPad(utils.hexlify(amount), 32),
+        chequeBank.address,
+        utils.hexZeroPad(utils.hexlify(0), 4),
+        utils.hexZeroPad(utils.hexlify(0), 4),
+      ]);
+      const signature = await user1.signMessage(
+        utils.arrayify(utils.keccak256(concat))
+      );
+
+      let makeChequeData = {
+        chequeInfo: {
+          chequeId: id,
+          payer,
+          payee,
+          amount,
+          validFrom: 0,
+          validThru: 0,
+        },
+        sig: signature,
+      };
+      tx = await chequeBank.issueCheque(makeChequeData);
+      await tx.wait();
+
+      expect(await chequeBank.isChequeValid(user2.address, id)).to.be.true;
+      expect(await chequeBank.redeemableCheques(id)).to.be.true;
+
+      // signover
+      const getCounter: BigNumber = (await chequeBank.chequeSignOverCounter(id)).toNumber() + 1;
+      const makeSignOver = ethers.utils.hexConcat([
+        "0xFFFFDEAD",
+        utils.hexZeroPad(utils.hexlify(getCounter), 1),
+        id,
+        payee,
+        payee2,
+      ]);
+      const signOverSignature = await user2.signMessage(
+        utils.arrayify(utils.keccak256(makeSignOver))
+      );
+
+      const signOver = {
+        signOverInfo: {
+          chequeId: id,
+          counter: getCounter,
+          oldPayee: payee,
+          newPayee: payee2,
+        },
+        sig: signOverSignature,
+      }
+      tx = await chequeBank.connect(user2).notifySignOver(signOver);
+      await tx.wait();
+
+      expect(await chequeBank.chequeSignOverCounter(id)).to.equal(BigNumber.from(1));
+      expect((await chequeBank.cheques(id)).chequeInfo.payee).to.equal(payee2);
+      expect((await chequeBank.chequeSignOverList(id, 0)).signOverInfo.chequeId).to.equal('0x' + id.toString('hex'));
+
+      // after signOver redeem fail
+      const remakeChequeData = {
+        chequeId: id,
+        payer,
+        payee,
+        amount,
+        validFrom: 0,
+        validThru: 0,
+      };
+      await expect(chequeBank.connect(user2).redeem(remakeChequeData)).to.be.revertedWith('Unmatched cheque and payee');
+
+      // redeem from payee2
+      makeChequeData.chequeInfo.payee = payee2;
+      tx = await chequeBank.connect(user3).redeemSignOver(makeChequeData, [signOver]);
+      await tx.wait()
+      expect(await chequeBank.userBalances(payee2) > 0).to.be.true;
     });
   });
 });
