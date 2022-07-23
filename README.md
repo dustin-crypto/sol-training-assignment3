@@ -44,5 +44,7 @@ yarn hardhat test
 - isChequeValid
 - revoke
 - redeem
+- notifySignOver and redeemSignOver
 
 ## Additional Task
+- sign-over feature
